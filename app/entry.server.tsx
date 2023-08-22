@@ -4,37 +4,61 @@
  * For more information, see https://remix.run/file-conventions/entry.server
  */
 
-import type { AppLoadContext, EntryContext } from "@remix-run/cloudflare";
-import { RemixServer } from "@remix-run/react";
-import isbot from "isbot";
-import { renderToReadableStream } from "react-dom/server";
+import * as ReactDOMServer from 'react-dom/server';
+import { RemixServer } from '@remix-run/react';
+import type { EntryContext } from '@remix-run/cloudflare';
+import createEmotionCache from '~/mui/createEmotionCache';
+import theme from '~/mui/theme';
+import CssBaseline from '@mui/material/CssBaseline';
+import { ThemeProvider } from '@mui/material/styles';
+import { CacheProvider } from '@emotion/react';
+import createEmotionServer from '@emotion/server/create-instance';
 
-export default async function handleRequest(
+export default function handleRequest(
   request: Request,
   responseStatusCode: number,
   responseHeaders: Headers,
   remixContext: EntryContext,
-  loadContext: AppLoadContext
 ) {
-  const body = await renderToReadableStream(
-    <RemixServer context={remixContext} url={request.url} />,
-    {
-      signal: request.signal,
-      onError(error: unknown) {
-        // Log streaming rendering errors from inside the shell
-        console.error(error);
-        responseStatusCode = 500;
-      },
-    }
-  );
+  const cache = createEmotionCache();
+  const { extractCriticalToChunks } = createEmotionServer(cache);
 
-  if (isbot(request.headers.get("user-agent"))) {
-    await body.allReady;
+  function MuiRemixServer() {
+    return (
+      <CacheProvider value={cache}>
+        <ThemeProvider theme={theme}>
+          {/* CssBaseline kickstart an elegant, consistent, and simple baseline to build upon. */}
+          <CssBaseline />
+          <RemixServer context={remixContext} url={request.url} />
+        </ThemeProvider>
+      </CacheProvider>
+    );
   }
 
-  responseHeaders.set("Content-Type", "text/html");
-  return new Response(body, {
-    headers: responseHeaders,
+  // Render the component to a string.
+  const html = ReactDOMServer.renderToString(<MuiRemixServer />);
+
+  // Grab the CSS from emotion
+  const { styles } = extractCriticalToChunks(html);
+
+  let stylesHTML = '';
+
+  styles.forEach(({ key, ids, css }) => {
+    const emotionKey = `${key} ${ids.join(' ')}`;
+    const newStyleTag = `<style data-emotion="${emotionKey}">${css}</style>`;
+    stylesHTML = `${stylesHTML}${newStyleTag}`;
+  });
+
+  // Add the Emotion style tags after the insertion point meta tag
+  const markup = html.replace(
+    /<meta(\s)*name="emotion-insertion-point"(\s)*content="emotion-insertion-point"(\s)*\/>/,
+    `<meta name="emotion-insertion-point" content="emotion-insertion-point"/>${stylesHTML}`,
+  );
+
+  responseHeaders.set('Content-Type', 'text/html');
+
+  return new Response(`<!DOCTYPE html>${markup}`, {
     status: responseStatusCode,
+    headers: responseHeaders,
   });
 }
